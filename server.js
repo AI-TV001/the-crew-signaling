@@ -3,16 +3,21 @@
  *
  * Relays SDP offers/answers and ICE candidates between one broadcaster
  * (a guest's phone, going live for karaoke or a speech) and any number of
- * viewers (the projector page, and optionally the dashboard for preview).
- * It never touches the video/audio itself — once the two sides connect,
- * media flows directly between them (or via public STUN), this server
- * just introduces them.
+ * viewers — the dashboard (previewing/testing levels) and the projector
+ * (the actual public feed) can both be connected to the same broadcaster
+ * at once, so each viewer gets its own peer connection on the broadcaster
+ * side, tracked by viewerId.
+ *
+ * This server never touches the video/audio itself — once two sides
+ * connect, media flows directly between them (or via public STUN), this
+ * server just introduces them.
  *
  * Rooms are keyed by event_id, so each event's broadcast is isolated.
  */
 
 const { WebSocketServer } = require('ws');
 const http = require('http');
+const crypto = require('crypto');
 
 const PORT = process.env.PORT || 8080;
 
@@ -23,12 +28,16 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocketServer({ server });
 
-// roomId (event_id) -> { broadcaster: ws|null, viewers: Set<ws> }
+// roomId (event_id) -> { broadcaster: ws|null, viewers: Map<viewerId, ws> }
 const rooms = new Map();
 
 function getRoom(roomId) {
-  if (!rooms.has(roomId)) rooms.set(roomId, { broadcaster: null, viewers: new Set() });
+  if (!rooms.has(roomId)) rooms.set(roomId, { broadcaster: null, viewers: new Map() });
   return rooms.get(roomId);
+}
+
+function safeSend(ws, msg) {
+  if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
 }
 
 function cleanupSocket(ws) {
@@ -39,15 +48,12 @@ function cleanupSocket(ws) {
   if (room.broadcaster === ws) {
     room.broadcaster = null;
     room.viewers.forEach(v => safeSend(v, { type: 'broadcaster-left' }));
-  } else {
-    room.viewers.delete(ws);
+  } else if (ws.viewerId) {
+    room.viewers.delete(ws.viewerId);
+    safeSend(room.broadcaster, { type: 'viewer-left', viewerId: ws.viewerId });
   }
 
   if (!room.broadcaster && room.viewers.size === 0) rooms.delete(ws.roomId);
-}
-
-function safeSend(ws, msg) {
-  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
 }
 
 wss.on('connection', (ws) => {
@@ -62,10 +68,11 @@ wss.on('connection', (ws) => {
 
       if (msg.role === 'broadcaster') {
         room.broadcaster = ws;
-        room.viewers.forEach(v => safeSend(v, { type: 'broadcaster-joined' }));
+        room.viewers.forEach((v, viewerId) => safeSend(v, { type: 'broadcaster-joined' }));
       } else {
-        room.viewers.add(ws);
-        safeSend(ws, { type: room.broadcaster ? 'broadcaster-joined' : 'no-broadcaster' });
+        ws.viewerId = crypto.randomUUID();
+        room.viewers.set(ws.viewerId, ws);
+        safeSend(ws, { type: room.broadcaster ? 'broadcaster-joined' : 'no-broadcaster', viewerId: ws.viewerId });
       }
       return;
     }
@@ -74,9 +81,10 @@ wss.on('connection', (ws) => {
     if (!room) return;
 
     if (ws.role === 'broadcaster') {
-      room.viewers.forEach(v => safeSend(v, { ...msg, from: 'broadcaster' }));
+      const target = room.viewers.get(msg.viewerId);
+      if (target) safeSend(target, { ...msg, from: 'broadcaster' });
     } else if (room.broadcaster) {
-      safeSend(room.broadcaster, { ...msg, from: 'viewer' });
+      safeSend(room.broadcaster, { ...msg, from: 'viewer', viewerId: ws.viewerId });
     }
   });
 
@@ -87,4 +95,3 @@ wss.on('connection', (ws) => {
 server.listen(PORT, () => {
   console.log('Signaling server listening on port ' + PORT);
 });
-
