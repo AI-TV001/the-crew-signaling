@@ -1,0 +1,12 @@
+{
+  "name": "the-crew-signaling",
+  "version": "1.0.0",
+  "description": "WebRTC signaling relay for The Crew's karaoke/live-broadcast feature",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
