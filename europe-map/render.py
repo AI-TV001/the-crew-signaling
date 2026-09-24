@@ -38,10 +38,10 @@ BORDER_PX = 2.2
 STOPS = [(0.0, "#FD0100"), (0.5, "#C55085"), (1.0, "#00F0FF")]
 
 # Timing: countries start falling between 0.0s and START_SPREAD, each fall
-# lasts FALL_DUR, so the final country lands at ~5.4s and the finished map
-# holds for the last ~0.6s of the 6s clip.
-FALL_DUR = 1.7
-START_SPREAD = 3.7
+# lasts FALL_DUR, so the final country lands at ~5.7s and the finished map
+# holds for the last ~0.3s of the 6s clip.
+FALL_DUR = 2.3
+START_SPREAD = 3.4
 SHUTTER = 0.5                 # 180-degree shutter
 BLUR_STEP_PX = 1.5            # max travel between motion-blur sub-samples
 MAX_BLUR_SAMPLES = 48
@@ -72,8 +72,8 @@ def hex_rgb(h):
     return tuple(int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
 
 
-def ease_out_quint(t):
-    return 1 - (1 - t) ** 5
+def ease_out_cubic(t):
+    return 1 - (1 - t) ** 3
 
 
 def ease_in_out_sine(t):
@@ -153,14 +153,12 @@ def plan_motion(countries):
         c["drop"] = maxy + 80 + rnd.uniform(0, 220)
         c["rot0"] = math.radians(rnd.uniform(-9, 9))
         c["drift"] = rnd.uniform(-40, 40)
-    # Draw big countries first so small neighbours land "on top" cleanly.
-    countries.sort(key=lambda c: -c["geom"].area)
     return countries
 
 
 def country_offset(c, t):
     p = min(1.0, max(0.0, (t - c["t0"]) / FALL_DUR))
-    e = ease_out_quint(p)
+    e = ease_out_cubic(p)
     return c["drift"] * (1 - e), -c["drop"] * (1 - e)
 
 
@@ -198,14 +196,16 @@ def render_frame(countries, gradient, t):
     ctx.set_line_join(cairo.LINE_JOIN_ROUND)
     ctx.set_line_width(BORDER_PX / k)
     ctx.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
-    for c in countries:
+    # Paint in order of fall progress: countries still in the air go
+    # underneath, landed countries always sit on top of anything falling past.
+    for c in sorted(countries, key=lambda c: (min(1.0, (t - c["t0"]) / FALL_DUR),
+                                              -c["geom"].area)):
         p = (t - c["t0"]) / FALL_DUR
         if p <= 0:
             continue
         p = min(1.0, p)
-        e = ease_out_quint(p)
         dx, dy = country_offset(c, t)
-        rot = c["rot0"] * (1 - e) ** 1.5
+        rot = c["rot0"] * (1 - ease_out_cubic(p)) ** 1.5
         ctx.save()
         ctx.translate(c["cx"] + dx, c["cy"] + dy)
         ctx.rotate(rot)

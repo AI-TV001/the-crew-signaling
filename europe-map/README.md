@@ -10,10 +10,11 @@
   seamlessly once everything has landed.
 - **Borders:** 2.2 px `#112C4D` outline on every country.
 - **Motion:** each of the 56 countries starts fully above the frame with a
-  slight tilt (±9°) and sideways drift, then drops in with an ease-out-quint
-  curve over 1.7 s, straightening as it settles. Countries cascade in roughly
-  west → east (with jitter) from 0.0 s to 3.7 s; the last lands at ~5.4 s and
-  the finished map holds to 6.0 s. A slow eased 4.5 % push-in runs across the
+  slight tilt (±9°) and sideways drift, then drops in with an ease-out-cubic
+  curve over 2.3 s, straightening as it settles. Countries cascade in roughly
+  west → east (with jitter) from 0.0 s to 3.4 s; the last lands at ~5.7 s and
+  the finished map holds to 6.0 s. Landed countries always sit on top:
+  anything still falling passes behind them. A slow eased 4.5 % push-in runs across the
   whole clip so the camera is never locked off. Adaptive 180° motion blur.
 - **Accuracy:** Natural Earth 1:10m admin-0 boundaries, projected in
   ETRS89-LAEA (EPSG:3035), the EU's standard pan-European projection.
