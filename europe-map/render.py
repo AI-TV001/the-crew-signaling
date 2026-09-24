@@ -55,7 +55,9 @@ MAX_BLUR_SAMPLES = 48
 # Gentle continuous push-in so the camera is never locked-off.
 PUSH_START, PUSH_END = 1.0, 1.045
 
-# Every European sovereign state plus all 55 UEFA member associations
+# Every country visible in the frame is drawn. This checklist is the set
+# that must be present (the load fails otherwise): every European
+# sovereign state plus all 55 UEFA member associations
 # (which adds Israel and Kazakhstan, and counts England, Scotland, Wales and
 # Northern Ireland as separate countries). Names are Natural Earth ADMIN
 # names; the UK home nations come from the map-subunits file.
@@ -73,9 +75,12 @@ COUNTRIES = {
     "England", "Scotland", "Wales", "Northern Ireland",
 }
 UK_NATIONS = {"England", "Scotland", "Wales", "Northern Ireland"}
-# Territories drawn so the map has no holes, but not in the country
-# checklist: the Crown Dependencies and Palestine (West Bank and Gaza).
-TERRITORIES = {"Isle of Man", "Jersey", "Guernsey", "Palestine"}
+# Filled with the gradient: the checklist plus the Crown Dependencies.
+# Every other country in the frame (North Africa, the Middle East, Central
+# Asia, Greenland, Palestine...) is drawn as a gradient outline only.
+FILLED = COUNTRIES | {"Isle of Man", "Jersey", "Guernsey"}
+OUTLINE_PX = 1.5
+OUTLINE_ALPHA = 0.7
 # Small areas merged into the country they belong to.
 MERGE = {
     "Aland": "Finland",
@@ -131,14 +136,13 @@ def load_countries(path, subunits_path):
     groups = {}
     for f in feats:
         name = MERGE.get(f["properties"]["ADMIN"], f["properties"]["ADMIN"])
-        if name not in COUNTRIES and name not in TERRITORIES:
-            continue
         g = shape(f["geometry"])
-        # Keep only the part of the world that could land near the frame
-        # before projecting: drops overseas territories (French Guiana,
-        # Réunion...) and the Atlantic specks (Azores, Madeira, Canaries)
-        # that would otherwise sit as noise on the frame edge.
-        g = g.intersection(box(-24.6, 29.0, 110, 90))
+        # Every country that appears anywhere in the frame is drawn, so the
+        # map is complete to the edges (North Africa, the Middle East,
+        # Central Asia, the Atlantic islands). Pre-clip to a generous
+        # lon/lat window before projecting so far-away land (the Americas,
+        # East Asia, overseas territories) never wraps into view.
+        g = g.intersection(box(-80, -5, 150, 90))
         if g.is_empty:
             continue
         g = shp_transform(lambda x, y, z=None: tr.transform(x, y), g)
@@ -161,7 +165,8 @@ def load_countries(path, subunits_path):
         size = math.sqrt(g.area)
         border = 0.0 if g.area < NO_BORDER_BELOW_PX2 else BORDER_PX * min(
             1.0, max(MIN_BORDER_SCALE, size / SMALL_BORDER_REF_PX))
-        countries.append({"name": name, "geom": geom, "border": border})
+        countries.append({"name": name, "geom": geom, "border": border,
+                          "filled": name in FILLED})
     missing = COUNTRIES - {c["name"] for c in countries}
     assert not missing, f"countries missing from the map: {missing}"
     return countries
@@ -246,10 +251,11 @@ def render_frame(countries, gradient, t):
     ctx.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
     # Paint landed countries first, then everything still in the air on top,
     # so a falling country always passes over the countries already in place.
-    # Ties (all landed) paint large first so enclaves (Vatican, San Marino)
-    # sit on top of Italy.
+    # Among landed countries, outline-only ones paint first so the filled
+    # countries' navy borders cover the shared edges cleanly; then large
+    # before small so enclaves (Vatican, San Marino) sit on top of Italy.
     for c in sorted(countries, key=lambda c: (-min(1.0, (t - c["t0"]) / FALL_DUR),
-                                              -c["geom"].area)):
+                                              c["filled"], -c["geom"].area)):
         p = (t - c["t0"]) / FALL_DUR
         if p <= 0:
             continue
@@ -263,6 +269,15 @@ def render_frame(countries, gradient, t):
         geom_path(ctx, c["geom"])
         # Gradient is defined in final map space, so it moves with the
         # country and stitches seamlessly once it lands.
+        if not c["filled"]:
+            ctx.push_group()
+            ctx.set_source(gradient)
+            ctx.set_line_width(OUTLINE_PX / k)
+            ctx.stroke()
+            ctx.pop_group_to_source()
+            ctx.paint_with_alpha(OUTLINE_ALPHA)
+            ctx.restore()
+            continue
         ctx.set_source(gradient)
         if c["border"]:
             ctx.fill_preserve()

@@ -8,7 +8,7 @@
   Russia and Kazakhstan). The gradient is locked to each country's final map
   position, so it rides along with the country as it falls and stitches
   seamlessly once everything has landed.
-- **Borders:** 2.2 px `#112C4D` outline on every country (thinner on very small ones).
+- **Borders:** 2.2 px `#112C4D` outline on every filled country (thinner on very small ones).
 - **Motion:** each country starts fully above the frame with a slight tilt
   (±9°) and sideways drift, then drops in with an ease-out-cubic curve over
   2.3 s, straightening as it settles. Countries cascade in roughly west → east
@@ -25,8 +25,12 @@
   Luxembourg, Malta, Moldova, Monaco, Montenegro, Netherlands, North
   Macedonia, Northern Ireland, Norway, Poland, Portugal, Romania, Russia,
   San Marino, Scotland, Serbia, Slovakia, Slovenia, Spain, Sweden,
-  Switzerland, Turkey, Ukraine, Vatican, Wales. Isle of Man, Jersey, Guernsey
-  and Palestine are also drawn so the map has no holes.
+  Switzerland, Turkey, Ukraine, Vatican, Wales (plus the Isle of Man, Jersey
+  and Guernsey) are **filled** with the gradient.
+- **Neighbours:** every other country that appears in the frame — Greenland,
+  North Africa, the Middle East (incl. Palestine), Central Asia — is drawn as a
+  **gradient outline only** (1.5 px, 70 % opacity), falls in the same way, and
+  sits underneath the filled countries' borders once landed.
 - **Accuracy:** Natural Earth 1:10m boundaries, German point-of-view edition,
   which follows the internationally recognised (UN / EU) position: Crimea is
   Ukrainian, the Golan Heights are Syrian (not drawn), Cyprus is one country,
