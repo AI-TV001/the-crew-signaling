@@ -11,11 +11,17 @@ true position on an accurate map of Europe.
              so it travels with the country as it falls and lines up
              seamlessly once everything has landed)
   Borders    #112C4D outline on every country
-  Data       Natural Earth 1:10m admin-0 countries
+  Data       Natural Earth 1:10m admin-0 countries, German point-of-view
+             edition (ne_10m_admin_0_countries_deu), which follows the
+             internationally recognised (UN / EU) position: Crimea is part
+             of Ukraine, the Golan Heights are Syrian (not drawn), Cyprus is
+             one country, Kosovo is shown. Map subunits supply England,
+             Scotland, Wales and Northern Ireland.
   Projection ETRS89 Lambert Azimuthal Equal-Area (EPSG:3035), the EU's
              standard projection for pan-European maps
 
-Usage: python3 render.py <ne_10m_admin_0_countries.geojson> <out.mp4>
+Usage: python3 render.py <ne_10m_admin_0_countries_deu.geojson> \
+                        <ne_10m_admin_0_map_subunits.geojson> <out.mp4>
 """
 import json
 import math
@@ -49,21 +55,49 @@ MAX_BLUR_SAMPLES = 48
 # Gentle continuous push-in so the camera is never locked-off.
 PUSH_START, PUSH_END = 1.0, 1.045
 
-# Features that make up the map; small territories are merged into parents.
+# Every European sovereign state plus all 55 UEFA member associations
+# (which adds Israel and Kazakhstan, and counts England, Scotland, Wales and
+# Northern Ireland as separate countries). Names are Natural Earth ADMIN
+# names; the UK home nations come from the map-subunits file.
+COUNTRIES = {
+    "Albania", "Andorra", "Armenia", "Austria", "Azerbaijan", "Belarus",
+    "Belgium", "Bosnia and Herzegovina", "Bulgaria", "Croatia", "Cyprus",
+    "Czechia", "Denmark", "Estonia", "Faroe Islands", "Finland", "France",
+    "Georgia", "Germany", "Gibraltar", "Greece", "Hungary", "Iceland",
+    "Ireland", "Israel", "Italy", "Kazakhstan", "Kosovo", "Latvia",
+    "Liechtenstein", "Lithuania", "Luxembourg", "Malta", "Moldova", "Monaco",
+    "Montenegro", "Netherlands", "North Macedonia", "Norway", "Poland",
+    "Portugal", "Republic of Serbia", "Romania", "Russia", "San Marino",
+    "Slovakia", "Slovenia", "Spain", "Sweden", "Switzerland", "Turkey",
+    "Ukraine", "Vatican",
+    "England", "Scotland", "Wales", "Northern Ireland",
+}
+UK_NATIONS = {"England", "Scotland", "Wales", "Northern Ireland"}
+# Territories drawn so the map has no holes, but not in the country
+# checklist: the Crown Dependencies and Palestine (West Bank and Gaza).
+TERRITORIES = {"Isle of Man", "Jersey", "Guernsey", "Palestine"}
+# Small areas merged into the country they belong to.
 MERGE = {
     "Aland": "Finland",
     "Akrotiri Sovereign Base Area": "Cyprus",
     "Dhekelia Sovereign Base Area": "Cyprus",
     "Cyprus No Mans Area": "Cyprus",
+    "Baykonur Cosmodrome": "Kazakhstan",
 }
-EXTRA = {"Turkey", "Cyprus", "Northern Cyprus", "Georgia", "Armenia",
-         "Azerbaijan"} | set(MERGE)
+
+# Every country is drawn at its true outline and scale. Small ones get a
+# proportionally thinner border so the outline never swallows the country
+# (Andorra, Liechtenstein, Malta, the Faroes...); sub-pixel states
+# (Vatican, Monaco, Gibraltar, San Marino) are filled with no border at all.
+SMALL_BORDER_REF_PX = 30       # countries narrower than this get thinner borders
+MIN_BORDER_SCALE = 0.3
+NO_BORDER_BELOW_PX2 = 4
 
 # Map framing in EPSG:3035 metres (x = easting, y = northing).
-# Iceland on the left, the Urals/Caspian on the right, North Cape at the
-# top, Crete / Cyprus at the bottom.
-CENTER_X, CENTER_Y = 4_600_000, 3_420_000
-MAP_HEIGHT_M = 4_300_000
+# Iceland on the left, Russia / Kazakhstan running off the right edge,
+# North Cape at the top, Israel (Eilat) at the bottom.
+CENTER_X, CENTER_Y = 5_000_000, 3_280_000
+MAP_HEIGHT_M = 4_750_000
 SCALE = H / MAP_HEIGHT_M       # px per metre
 
 
@@ -80,8 +114,13 @@ def ease_in_out_sine(t):
     return -(math.cos(math.pi * t) - 1) / 2
 
 
-def load_countries(path):
-    data = json.load(open(path))
+def load_countries(path, subunits_path):
+    feats = [f for f in json.load(open(path))["features"]
+             if f["properties"]["ADMIN"] != "United Kingdom"]
+    feats += [dict(f, properties=dict(f["properties"],
+                                      ADMIN=f["properties"]["SUBUNIT"]))
+              for f in json.load(open(subunits_path))["features"]
+              if f["properties"]["SUBUNIT"] in UK_NATIONS]
     tr = Transformer.from_crs("EPSG:4326", "EPSG:3035", always_xy=True)
     to_px = lambda x, y: ((np.asarray(x) - CENTER_X) * SCALE + W / 2,
                           H / 2 - (np.asarray(y) - CENTER_Y) * SCALE)
@@ -90,18 +129,16 @@ def load_countries(path):
     clip = box(-60, -60, W + 60, H + 60)
 
     groups = {}
-    for f in data["features"]:
-        p = f["properties"]
-        name = p["ADMIN"]
-        if p["CONTINENT"] != "Europe" and name not in EXTRA:
+    for f in feats:
+        name = MERGE.get(f["properties"]["ADMIN"], f["properties"]["ADMIN"])
+        if name not in COUNTRIES and name not in TERRITORIES:
             continue
-        name = MERGE.get(name, name)
         g = shape(f["geometry"])
         # Keep only the part of the world that could land near the frame
         # before projecting: drops overseas territories (French Guiana,
         # Réunion...) and the Atlantic specks (Azores, Madeira, Canaries)
         # that would otherwise sit as noise on the frame edge.
-        g = g.intersection(box(-24.6, 34.4, 110, 90))
+        g = g.intersection(box(-24.6, 29.0, 110, 90))
         if g.is_empty:
             continue
         g = shp_transform(lambda x, y, z=None: tr.transform(x, y), g)
@@ -120,16 +157,28 @@ def load_countries(path):
         if not keep:
             keep = [max((q for q in polys if isinstance(q, Polygon)),
                         key=lambda q: q.area)]
-        countries.append({"name": name, "geom": MultiPolygon(keep)})
+        geom = MultiPolygon(keep)
+        size = math.sqrt(g.area)
+        border = 0.0 if g.area < NO_BORDER_BELOW_PX2 else BORDER_PX * min(
+            1.0, max(MIN_BORDER_SCALE, size / SMALL_BORDER_REF_PX))
+        countries.append({"name": name, "geom": geom, "border": border})
+    missing = COUNTRIES - {c["name"] for c in countries}
+    assert not missing, f"countries missing from the map: {missing}"
     return countries
+
+
+def to_px(x, y):
+    return (x - CENTER_X) * SCALE + W / 2, H / 2 - (y - CENTER_Y) * SCALE
 
 
 def build_gradient():
     # Diagonal sweep across the whole map: red in the south-west (Iberia),
-    # magenta through central Europe (Poland sits at the midpoint), pure cyan
-    # across western Russia. Endpoints span the land, not the frame, so the
+    # magenta through central Europe, pure cyan across Russia / Kazakhstan.
+    # Endpoints are geographic and span the land, not the frame, so the
     # full red -> cyan range is visible on the countries themselves.
-    x0, y0, x1, y1 = 430, 1020, 1700, 180
+    tr = Transformer.from_crs("EPSG:4326", "EPSG:3035", always_xy=True)
+    (x0, y0), (x1, y1) = [to_px(*tr.transform(lon, lat))
+                          for lon, lat in ((-9.0, 37.0), (80.0, 58.0))]
     g = cairo.LinearGradient(x0, y0, x1, y1)
     for off, hx in STOPS:
         g.add_color_stop_rgb(off, *hex_rgb(hx))
@@ -194,11 +243,12 @@ def render_frame(countries, gradient, t):
     ctx.translate(-W / 2, -H / 2)
 
     ctx.set_line_join(cairo.LINE_JOIN_ROUND)
-    ctx.set_line_width(BORDER_PX / k)
     ctx.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
-    # Paint in order of fall progress: countries still in the air go
-    # underneath, landed countries always sit on top of anything falling past.
-    for c in sorted(countries, key=lambda c: (min(1.0, (t - c["t0"]) / FALL_DUR),
+    # Paint landed countries first, then everything still in the air on top,
+    # so a falling country always passes over the countries already in place.
+    # Ties (all landed) paint large first so enclaves (Vatican, San Marino)
+    # sit on top of Italy.
+    for c in sorted(countries, key=lambda c: (-min(1.0, (t - c["t0"]) / FALL_DUR),
                                               -c["geom"].area)):
         p = (t - c["t0"]) / FALL_DUR
         if p <= 0:
@@ -214,9 +264,13 @@ def render_frame(countries, gradient, t):
         # Gradient is defined in final map space, so it moves with the
         # country and stitches seamlessly once it lands.
         ctx.set_source(gradient)
-        ctx.fill_preserve()
-        ctx.set_source_rgb(*BORDER)
-        ctx.stroke()
+        if c["border"]:
+            ctx.fill_preserve()
+            ctx.set_source_rgb(*BORDER)
+            ctx.set_line_width(c["border"] / k)
+            ctx.stroke()
+        else:
+            ctx.fill()
         ctx.restore()
 
     buf = np.frombuffer(surf.get_data(), np.uint8).reshape(H, surf.get_stride() // 4, 4)
@@ -224,8 +278,8 @@ def render_frame(countries, gradient, t):
 
 
 def main():
-    src, out = sys.argv[1], sys.argv[2]
-    countries = plan_motion(load_countries(src))
+    src, sub, out = sys.argv[1], sys.argv[2], sys.argv[3]
+    countries = plan_motion(load_countries(src, sub))
     print(f"{len(countries)} countries:", ", ".join(sorted(c['name'] for c in countries)))
     gradient = build_gradient()
 
@@ -250,9 +304,9 @@ def main():
             acc += render_frame(countries, gradient, max(0.0, ts))
         frame = (acc / n + 0.5).astype(np.uint8)
         proc.stdin.write(frame.tobytes())
-        if f in (0, 50, 100, N_FRAMES - 1) and len(sys.argv) > 3:
+        if f in (0, 50, 100, N_FRAMES - 1) and len(sys.argv) > 4:
             from PIL import Image
-            Image.fromarray(frame).save(f"{sys.argv[3]}/frame_{f:03d}.png")
+            Image.fromarray(frame).save(f"{sys.argv[4]}/frame_{f:03d}.png")
     proc.stdin.close()
     proc.wait()
     print("wrote", out)
