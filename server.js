@@ -1,18 +1,11 @@
 /**
- * THE CREW — WebRTC signaling server
+ * THE CREW â€” WebRTC signaling server
  *
- * Relays SDP offers/answers and ICE candidates between one broadcaster
- * (a guest's phone, going live for karaoke or a speech) and any number of
- * viewers — the dashboard (previewing/testing levels) and the projector
- * (the actual public feed) can both be connected to the same broadcaster
- * at once, so each viewer gets its own peer connection on the broadcaster
- * side, tracked by viewerId.
- *
- * This server never touches the video/audio itself — once two sides
- * connect, media flows directly between them (or via public STUN), this
- * server just introduces them.
- *
- * Rooms are keyed by event_id, so each event's broadcast is isolated.
+ * Introduces broadcasters (guests' phones) to viewers (dashboard preview,
+ * projector). A room (one per event) can hold two broadcasters â€” "main"
+ * and "partner" (a duet) â€” and any number of viewers. Each viewer gets its
+ * own peer connection to each broadcaster, tracked by viewerId + slot.
+ * Media never passes through here; only connection set-up messages do.
  */
 
 const { WebSocketServer } = require('ws');
@@ -28,11 +21,11 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocketServer({ server });
 
-// roomId (event_id) -> { broadcaster: ws|null, viewers: Map<viewerId, ws> }
+// roomId -> { broadcasters: Map<slot, ws>, viewers: Map<viewerId, ws> }
 const rooms = new Map();
 
 function getRoom(roomId) {
-  if (!rooms.has(roomId)) rooms.set(roomId, { broadcaster: null, viewers: new Map() });
+  if (!rooms.has(roomId)) rooms.set(roomId, { broadcasters: new Map(), viewers: new Map() });
   return rooms.get(roomId);
 }
 
@@ -45,15 +38,17 @@ function cleanupSocket(ws) {
   const room = rooms.get(ws.roomId);
   if (!room) return;
 
-  if (room.broadcaster === ws) {
-    room.broadcaster = null;
-    room.viewers.forEach(v => safeSend(v, { type: 'broadcaster-left' }));
+  if (ws.role === 'broadcaster') {
+    if (room.broadcasters.get(ws.slot) === ws) {
+      room.broadcasters.delete(ws.slot);
+      room.viewers.forEach(v => safeSend(v, { type: 'broadcaster-left', slot: ws.slot }));
+    }
   } else if (ws.viewerId) {
     room.viewers.delete(ws.viewerId);
-    safeSend(room.broadcaster, { type: 'viewer-left', viewerId: ws.viewerId });
+    room.broadcasters.forEach(b => safeSend(b, { type: 'viewer-left', viewerId: ws.viewerId }));
   }
 
-  if (!room.broadcaster && room.viewers.size === 0) rooms.delete(ws.roomId);
+  if (room.broadcasters.size === 0 && room.viewers.size === 0) rooms.delete(ws.roomId);
 }
 
 wss.on('connection', (ws) => {
@@ -67,12 +62,17 @@ wss.on('connection', (ws) => {
       const room = getRoom(msg.room);
 
       if (msg.role === 'broadcaster') {
-        room.broadcaster = ws;
-        room.viewers.forEach((v, viewerId) => safeSend(v, { type: 'broadcaster-joined' }));
+        ws.slot = msg.slot === 'partner' ? 'partner' : 'main';
+        room.broadcasters.set(ws.slot, ws);
+        room.viewers.forEach(v => safeSend(v, { type: 'broadcaster-joined', slot: ws.slot }));
       } else {
         ws.viewerId = crypto.randomUUID();
         room.viewers.set(ws.viewerId, ws);
-        safeSend(ws, { type: room.broadcaster ? 'broadcaster-joined' : 'no-broadcaster', viewerId: ws.viewerId });
+        if (room.broadcasters.size === 0) {
+          safeSend(ws, { type: 'no-broadcaster', viewerId: ws.viewerId });
+        } else {
+          room.broadcasters.forEach((b, slot) => safeSend(ws, { type: 'broadcaster-joined', slot, viewerId: ws.viewerId }));
+        }
       }
       return;
     }
@@ -82,9 +82,10 @@ wss.on('connection', (ws) => {
 
     if (ws.role === 'broadcaster') {
       const target = room.viewers.get(msg.viewerId);
-      if (target) safeSend(target, { ...msg, from: 'broadcaster' });
-    } else if (room.broadcaster) {
-      safeSend(room.broadcaster, { ...msg, from: 'viewer', viewerId: ws.viewerId });
+      if (target) safeSend(target, { ...msg, from: 'broadcaster', slot: ws.slot });
+    } else {
+      const slot = msg.slot === 'partner' ? 'partner' : 'main';
+      safeSend(room.broadcasters.get(slot), { ...msg, from: 'viewer', viewerId: ws.viewerId, slot });
     }
   });
 
